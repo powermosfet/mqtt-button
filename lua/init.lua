@@ -1,12 +1,16 @@
--- Config
-local pinButton1 = 5
-local pinButton2 = 1
-local pinLed1    = 6
-local pinLed2    = 2
-local pubTimer   = tmr.create()
-local mqttCli    = mqtt.Client("mqttButton", 120) 
-
 local wifiSetup = require("wifiSetup")
+local config    = require("config")
+local button    = require("button")
+local led       = require("led")
+
+local pubTimer = tmr.create()
+local mqttCli  = mqtt.Client(config.mqttClientName, config.mqttClientTimeout)
+local btn1     = button.create(config.board.pinButton1, mqttCli, config.mqttTopicButton1)
+local btn2     = button.create(config.board.pinButton2, mqttCli, config.mqttTopicButton2)
+local led1     = led.create(config.board.pinLed1)
+local led2     = led.create(config.board.pinLed2)
+
+am2320.init(config.board.pinAm2320Sda, config.board.pinAm2320Scl)
 
 function invert(old)
    if old == gpio.LOW then
@@ -25,45 +29,55 @@ function main()
    mqttCli:on("offline", function(client) print ("offline") end)
 
    print("MQTT connecting")
-   mqttCli:connect("192.168.10.118", 1883, 0, function(client)
+   mqttCli:connect(config.mqttServerHost, config.mqttServerPort, 0, function(client)
       print("MQTT connected")
 
-      -- temp/humidity timer
-      pubTimer:alarm(msecs({
-         hours   = 0,
-         minutes = 5,
-         seconds = 0
-      }), tmr.ALARM_AUTO, function()
-         local value = tmr.now()
-         client:publish("home/test/graph", value, 0, 0)
+      client:subscribe(config.mqttTopicBase .. config.mqttTopicLed1, 0, function(conn)
+         print("subscribe to LED1 success")
+
+         client:subscribe(config.mqttTopicBase .. config.mqttTopicLed2, 0, function(conn)
+            print("subscribe to LED2 success")
+         end)
       end)
 
-      gpio.trig(pinButton1, "both", 
-         function(level, time)
-            gpio.write(pinLed1, invert(level))
-            print("Button 1 pressed")
+      client:on("message", function(client, topic, message)
+         if topic == config.mqttTopicBase .. config.mqttTopicLed1 then
+            if message == "1" then
+               led1.on()
+            else
+               led1.off()
+            end
          end
-         )
-      gpio.trig(pinButton2, "both", 
-         function(level, time)
-            gpio.write(pinLed2, invert(level))
-            print("Button 2 pressed")
+
+         if topic == config.mqttTopicBase .. config.mqttTopicLed2 then
+            if message == "1" then
+               led2.on()
+            else
+               led2.off()
+            end
          end
-         )
+      end)
+
+      -- temp/humidity timer
+      pubTimer:alarm(msecs(config.am2320Interval), tmr.ALARM_AUTO, function()
+         local rh = 0
+         local t = 0
+         rh, t = am2320.read()
+         client:publish(config.mqttTopicBase .. "temperature", t / 10, 0, 0)
+         print("Publishing temp: " .. t / 10)
+         client:publish(config.mqttTopicBase .. "humidity", rh / 10, 0, 0)
+         print("Publishing humidity: " .. rh / 10)
+      end)
    end)
 end
 
 -- Setup
-gpio.mode(pinButton1, gpio.INPUT)
-gpio.mode(pinButton2, gpio.INPUT)
-gpio.mode(pinLed1, gpio.OUTPUT)
-gpio.mode(pinLed2, gpio.OUTPUT)
 wifi.setmode(wifi.STATION)
 wifi.sta.autoconnect(1)
 
 -- Check for "setup" button
-button1Value = gpio.read(pinButton1)
-button2Value = gpio.read(pinButton2)
+button1Value = gpio.read(config.board.pinButton1)
+button2Value = gpio.read(config.board.pinButton2)
 if button1Value == gpio.LOW and button2Value == gpio.LOW then
    wifiSetup.enter_setup(main)
 
